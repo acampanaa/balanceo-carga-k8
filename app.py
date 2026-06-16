@@ -20,5 +20,15 @@ def index():
         "peticiones_totales": doc["total"],
     })
 
+@app.route("/stress")
+def stress():
+    # Calcula números primos hasta 8000 para consumir CPU
+    limite = 8000
+    primos = [n for n in range(2, limite) if all(n % d != 0 for d in range(2, int(n**0.5) + 1))]
+    return jsonify({
+        "pod": os.environ.get("POD_NAME", "desconocido"),
+        "primos_encontrados": len(primos),
+    })
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

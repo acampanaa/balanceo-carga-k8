@@ -20,29 +20,43 @@ App Flask conectada a MongoDB, desplegada en Kubernetes con 3 réplicas detrás 
 
 ```bash
 # 1. Construir y publicar la imagen
-docker build -t amesitos/balanceo-app:v1 .
-docker push amesitos/balanceo-app:v1
+docker build -t amesitos/balanceo-app:v2 .
+docker push amesitos/balanceo-app:v2
 
-# 2. Arrancar minikube
+# 2. Arrancar minikube y activar metrics-server
 minikube start
+minikube addons enable metrics-server
 
 # 3. Desplegar MongoDB
 kubectl apply -f mongo-deployment.yaml
 
-# 4. Desplegar la app (3 réplicas) y el Service
+# 4. Desplegar la app (3 réplicas), el Service y el HPA
 kubectl apply -f app-deployment.yaml
+kubectl apply -f hpa.yaml
 
 # 5. Verificar que todo está Running
 kubectl get pods
+kubectl get hpa
 
 # 6. Exponer el puerto (déjalo abierto en otra terminal)
-kubectl port-forward svc/balanceo-app-svc 8080:80
+kubectl port-forward svc/balanceo-app-svc 8080:8080
 ```
 
-Prueba en `http://localhost:8080/` — respuesta esperada:
+### Verificar que funciona
 
-```json
-{"peticiones_totales": 1, "pod": "balanceo-app-645568b955-pb9db"}
+```powershell
+# Endpoint normal
+curl http://localhost:8080/
+# {"peticiones_totales": 1, "pod": "balanceo-app-...-pb9db"}
+
+# Endpoint de estrés (tarda 1-2 segundos, está calculando primos)
+curl http://localhost:8080/stress
+# {"pod": "balanceo-app-...-pb9db", "primos_encontrados": 1007}
+
+# Estado del HPA (espera hasta que TARGETS deje de mostrar <unknown>)
+kubectl get hpa
+# NAME               TARGETS    MINPODS   MAXPODS   REPLICAS
+# balanceo-app-hpa   2%/50%     2         6         3
 ```
 
 ---
@@ -91,21 +105,28 @@ El pod pasa a `Terminating` y Kubernetes crea uno nuevo automáticamente hasta v
 
 ---
 
-### Paso 4 — Escalado horizontal
+### Paso 4 — Autoescalado con HPA
 
-```bash
-kubectl scale deployment balanceo-app --replicas=5
-kubectl get pods -w
+El HPA escala los pods automáticamente cuando el CPU supera el 50%. No hay que hacer nada a mano.
 
-# Volver a 3 al terminar
-kubectl scale deployment balanceo-app --replicas=3
+**Terminal 1 — lanzar carga de CPU:**
+```powershell
+while ($true) { Invoke-RestMethod http://localhost:8080/stress | Out-Null }
 ```
+
+**Terminal 2 — observar cómo escala solo:**
+```powershell
+kubectl get hpa -w
+```
+
+Verás el CPU subir por encima del 50% y los pods pasar de 3 hasta 6 automáticamente. Para detener la carga pulsa `Ctrl+C` en la Terminal 1 y en unos minutos el HPA reducirá las réplicas de vuelta al mínimo (2).
 
 ---
 
 ## Limpieza
 
 ```bash
+kubectl delete -f hpa.yaml
 kubectl delete -f app-deployment.yaml
 kubectl delete -f mongo-deployment.yaml
 minikube stop
