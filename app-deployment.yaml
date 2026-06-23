@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: balanceo-app
-        image: amesitos/balanceo-app:v3
+        image: amesitos/balanceo-app:v4
         ports:
         - containerPort: 5000
         resources:

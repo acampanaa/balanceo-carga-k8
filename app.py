@@ -178,11 +178,15 @@ def health():
 
 @app.route("/stress")
 def stress():
-    limite = 8000
-    primos = [n for n in range(2, limite) if all(n % d != 0 for d in range(2, int(n**0.5) + 1))]
+    limite = 100000
+    iteraciones = 3
+    total = 0
+    for _ in range(iteraciones):
+        primos = [n for n in range(2, limite) if all(n % d != 0 for d in range(2, int(n**0.5) + 1))]
+        total = len(primos)
     return jsonify({
         "pod": POD_NAME,
-        "primos_encontrados": len(primos),
+        "primos_encontrados": total,
     })
 
 
