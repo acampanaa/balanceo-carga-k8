@@ -10,6 +10,16 @@ App Flask conectada a MongoDB, desplegada en Kubernetes con 3 réplicas detrás 
          [MongoDB]           ← guarda el contador
 ```
 
+## Endpoints
+
+| Ruta | Descripción |
+|---|---|
+| `GET /` | Incrementa el contador global y devuelve el pod que respondió |
+| `GET /stats` | Peticiones atendidas por **este pod** + total global |
+| `GET /health` | Sonda de salud (usada por Kubernetes) |
+| `GET /stress` | Calcula primos hasta 8000 para disparar el HPA |
+| `GET /dashboard` | Panel web en tiempo real del balanceo de carga |
+
 ## Requisitos
 
 - Docker Desktop con Docker Engine corriendo
@@ -20,8 +30,8 @@ App Flask conectada a MongoDB, desplegada en Kubernetes con 3 réplicas detrás 
 
 ```bash
 # 1. Construir y publicar la imagen
-docker build -t amesitos/balanceo-app:v2 .
-docker push amesitos/balanceo-app:v2
+docker build -t amesitos/balanceo-app:v3 .
+docker push amesitos/balanceo-app:v3
 
 # 2. Arrancar minikube y activar metrics-server
 minikube start
@@ -49,6 +59,14 @@ kubectl port-forward svc/balanceo-app-svc 8080:8080
 curl http://localhost:8080/
 # {"peticiones_totales": 1, "pod": "balanceo-app-...-pb9db"}
 
+# Peticiones atendidas por este pod específico
+curl http://localhost:8080/stats
+# {"peticiones_este_pod": 3, "peticiones_totales": 12, "pod": "balanceo-app-...-pb9db"}
+
+# Sonda de salud (la usa Kubernetes internamente)
+curl http://localhost:8080/health
+# {"status": "ok", "pod": "balanceo-app-...-pb9db"}
+
 # Endpoint de estrés (tarda 1-2 segundos, está calculando primos)
 curl http://localhost:8080/stress
 # {"pod": "balanceo-app-...-pb9db", "primos_encontrados": 1007}
@@ -58,6 +76,10 @@ kubectl get hpa
 # NAME               TARGETS    MINPODS   MAXPODS   REPLICAS
 # balanceo-app-hpa   2%/50%     2         6         3
 ```
+
+### Dashboard visual
+
+Abre **http://localhost:8080/dashboard** en el navegador para ver el balanceo de carga en tiempo real: cada pod aparece con un color distinto y la barra muestra cómo se distribuyen las peticiones.
 
 ---
 
@@ -72,6 +94,8 @@ for ($i=1; $i -le 8; $i++) { Invoke-RestMethod http://localhost:8080/ | ConvertT
 ```
 
 El campo `"pod"` cambia entre las 3 réplicas → kube-proxy distribuye el tráfico (round-robin / iptables).
+
+O abre el dashboard en el navegador: **http://localhost:8080/dashboard**
 
 ---
 
@@ -101,7 +125,7 @@ kubectl delete pod balanceo-app-<NOMBRE-COMPLETO>
 kubectl get pods -w
 ```
 
-El pod pasa a `Terminating` y Kubernetes crea uno nuevo automáticamente hasta volver a 3 réplicas.
+El pod pasa a `Terminating` y Kubernetes crea uno nuevo automáticamente hasta volver a 3 réplicas. Las liveness/readiness probes sobre `/health` permiten a K8s detectar pods no saludables y reemplazarlos antes incluso de que el pod muera.
 
 ---
 
