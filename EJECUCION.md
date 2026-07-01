@@ -1,6 +1,8 @@
 # Guía de ejecución
 
-Para entender los conceptos detrás de este proyecto, consulta [README.md](README.md).
+← [TEORIA.md](TEORIA.md) · [Índice](README.md)
+
+Para entender los conceptos detrás de este proyecto, lee [TEORIA.md](TEORIA.md) primero.
 
 ---
 
@@ -204,3 +206,7 @@ kubectl delete pod <nombre>   # borrar un pod (K8s lo recrea solo)
 minikube service <nombre-svc> # abrir un servicio en el navegador
 minikube stop                 # detener el clúster local
 ```
+
+---
+
+→ Siguiente: [ACTIVIDAD.md](ACTIVIDAD.md)

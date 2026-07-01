@@ -1,5 +1,7 @@
 # Trabajo Práctico — Kubernetes: balanceo de carga y autoescalado
 
+← [EJECUCION.md](EJECUCION.md) · [Índice](README.md)
+
 **Modalidad:** individual  
 **Entregable:** documento con capturas de pantalla y respuestas a las preguntas de cada actividad
 
