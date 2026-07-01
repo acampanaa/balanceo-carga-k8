@@ -1,12 +1,26 @@
-# Mini-clúster auto-reparable con balanceo de carga
+# Mini-clúster auto-reparable con balanceo de carga en Kubernetes
 
-App Flask conectada a MongoDB, desplegada en Kubernetes con réplicas detrás de un Service que balancea el tráfico. Cada petición devuelve el nombre del pod que la atendió y un contador global guardado en MongoDB.
+Este proyecto despliega una aplicación web real en un clúster local de Kubernetes que demuestra tres conceptos fundamentales: **balanceo de carga**, **auto-reparación** y **autoescalado**.
+
+Para ejecutar el proyecto, consulta [EJECUCION.md](EJECUCION.md).
+
+---
+
+## ¿Qué es Kubernetes?
+
+Kubernetes (también llamado K8s) es un sistema de orquestación de contenedores. Su función es gestionar automáticamente la ejecución, disponibilidad y escalado de aplicaciones empaquetadas en contenedores Docker.
+
+En lugar de ejecutar un contenedor manualmente con `docker run`, le describes a Kubernetes el estado deseado ("quiero 3 copias de esta app corriendo") y él se encarga de mantenerlo: si una copia falla, la reinicia; si hay mucha carga, crea más.
+
+---
+
+## Arquitectura del proyecto
 
 ```
-         Tú (navegador / terminal)
+         Usuario (navegador / terminal)
                     │
                     ▼
-          [Service LoadBalancer]       ← reparte el tráfico
+          [Service LoadBalancer]       ← distribuye el tráfico
          /          │          \
       Pod 1       Pod 2       Pod 3   ← app Flask (Python)
          \          │          /
@@ -15,217 +29,125 @@ App Flask conectada a MongoDB, desplegada en Kubernetes con réplicas detrás de
               [HPA - Autoscaler]      ← vigila CPU, escala de 2 a 6 pods
 ```
 
-## Endpoints
+---
 
-| Ruta | Descripción |
-|---|---|
-| `GET /` | Incrementa el contador global y devuelve el pod que respondió |
-| `GET /stats` | Peticiones atendidas por **este pod** + total global |
-| `GET /health` | Sonda de salud (usada por Kubernetes) |
-| `GET /stress` | Eleva el CPU artificialmente para disparar el HPA |
-| `GET /dashboard` | Panel web en tiempo real del balanceo de carga |
+## Conceptos clave
+
+### Pod
+
+El **pod** es la unidad mínima de Kubernetes. Representa uno o más contenedores que se ejecutan juntos en el mismo nodo. En este proyecto, cada pod contiene una instancia de la app Flask.
+
+Los pods son **efímeros**: pueden morir y ser reemplazados en cualquier momento. Por eso no guardan estado interno — el estado (el contador de peticiones) vive en MongoDB, no en los pods.
+
+Cada pod tiene:
+- Un nombre único generado automáticamente (`balanceo-app-5c5958b74-2dhqd`)
+- Su propia IP interna dentro del clúster
+- Acceso a las variables de entorno que le inyecta Kubernetes
+
+### Deployment
+
+Un **Deployment** es la declaración de cómo deben correr los pods: qué imagen usar, cuántas réplicas mantener, qué recursos asignarles, etc.
+
+```yaml
+spec:
+  replicas: 3          # Kubernetes mantiene siempre 3 pods corriendo
+  containers:
+  - image: amesitos/balanceo-app:v4
+    resources:
+      requests:
+        cpu: "100m"    # mínimo garantizado: 0.1 núcleos de CPU
+      limits:
+        cpu: "300m"    # máximo permitido: 0.3 núcleos de CPU
+```
+
+Si un pod muere o el nodo falla, el Deployment detecta que el estado actual (2 pods) no coincide con el deseado (3 pods) y crea uno nuevo automáticamente.
+
+### Service y balanceo de carga
+
+Un **Service** es una abstracción que expone un conjunto de pods como un único punto de acceso estable. Como los pods pueden morir y nacer con IPs distintas, el Service actúa como intermediario con IP fija.
+
+El Service de tipo `LoadBalancer` de este proyecto distribuye el tráfico entre los pods disponibles usando **kube-proxy**, que mantiene reglas de red (iptables) para repartir las peticiones en round-robin.
+
+```
+Petición entrante → Service (IP fija) → elige un pod disponible → responde
+```
+
+Esto explica por qué distintos pods responden a peticiones consecutivas: el Service no envía todo al mismo pod, sino que los alterna.
+
+### Auto-reparación (self-healing)
+
+Kubernetes monitorea continuamente el estado de los pods mediante dos tipos de sondas configuradas en el Deployment:
+
+**Readiness probe** — Kubernetes pregunta "¿estás listo para recibir tráfico?" antes de enviarle peticiones al pod. Si el pod responde mal, el Service lo excluye temporalmente aunque esté corriendo.
+
+**Liveness probe** — Kubernetes pregunta "¿sigues vivo?" cada cierto tiempo. Si el pod no responde, Kubernetes lo mata y crea uno nuevo.
+
+En este proyecto ambas sondas apuntan al endpoint `GET /health`:
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 5000
+  initialDelaySeconds: 5    # espera 5s antes del primer chequeo
+  periodSeconds: 5           # chequea cada 5s
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 5000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+```
+
+El resultado: si borras un pod manualmente o si este falla, el clúster vuelve al estado deseado solo, sin intervención humana.
+
+### Autoescalado con HPA
+
+El **HorizontalPodAutoscaler (HPA)** ajusta automáticamente el número de réplicas según el uso de recursos. En este proyecto escala según CPU:
+
+```yaml
+spec:
+  minReplicas: 2       # nunca menos de 2 pods
+  maxReplicas: 6       # nunca más de 6 pods
+  metrics:
+  - resource:
+      name: cpu
+      target:
+        averageUtilization: 50   # si el promedio de CPU supera 50%, escala
+```
+
+Para que el HPA funcione necesita datos de CPU en tiempo real. Esos datos los provee el **metrics-server**, un componente de Kubernetes que recolecta métricas de los nodos y las expone a través de la API del clúster.
+
+Sin metrics-server, el HPA no puede leer el CPU y queda en estado `<unknown>`, sin escalar nunca.
+
+El ciclo de autoescalado funciona así:
+
+```
+metrics-server mide CPU de los pods
+        ↓
+HPA calcula el promedio entre todas las réplicas
+        ↓
+Si promedio > 50% → crea más pods (hasta 6)
+Si promedio < 50% por varios minutos → elimina pods (hasta 2)
+```
+
+### Aplicaciones stateless y estado compartido
+
+Los pods de la app Flask son **stateless**: no guardan ningún dato entre peticiones. Si un pod muere, no se pierde información.
+
+El estado (el contador global de peticiones) vive en MongoDB, que es el único componente **stateful** del proyecto. Todos los pods comparten la misma instancia de MongoDB, por lo que el contador sigue siendo consistente aunque distintos pods atiendan cada petición.
+
+Este patrón es fundamental en arquitecturas de microservicios: los servicios de cómputo escalan horizontalmente sin estado propio, mientras que el estado se delega a una base de datos centralizada.
 
 ---
 
-## Requisitos
+## Resumen de recursos de Kubernetes usados
 
-Instala estas herramientas antes de continuar:
-
-| Herramienta | Para qué sirve | Descarga |
+| Recurso | Archivo | Para qué sirve |
 |---|---|---|
-| **Docker Desktop** | Motor de contenedores (incluye kubectl) | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop) |
-| **minikube** | Clúster Kubernetes local | [minikube.sigs.k8s.io](https://minikube.sigs.k8s.io/docs/start/) |
-| **Git** | Clonar el repositorio | [git-scm.com](https://git-scm.com) |
-
-> Asegúrate de que Docker Desktop esté corriendo (ícono visible en la barra de tareas) antes de continuar.
-
----
-
-## Despliegue
-
-### 1. Clonar el repositorio
-
-```powershell
-git clone https://github.com/amesitos/balanceo-carga-k8
-cd balanceo-carga-k8
-```
-
-### 2. Arrancar minikube y activar el metrics-server
-
-```powershell
-minikube start
-minikube addons enable metrics-server
-```
-
-> `minikube start` puede tardar 1–3 minutos la primera vez. El metrics-server es necesario para que el HPA pueda medir el CPU de los pods y decidir cuándo escalar.
-
-Verifica que el nodo está listo:
-
-```powershell
-kubectl get nodes
-# NAME       STATUS   ROLES           AGE
-# minikube   Ready    control-plane   1m
-```
-
-### 3. Desplegar MongoDB
-
-```powershell
-kubectl apply -f mongo-deployment.yaml
-```
-
-Espera a que el pod esté `Running` antes de continuar:
-
-```powershell
-kubectl get pods
-# NAME             READY   STATUS
-# mongo-xxxxx      1/1     Running   ← tiene que decir Running
-```
-
-### 4. Desplegar la app y el autoscaler
-
-```powershell
-kubectl apply -f app-deployment.yaml
-kubectl apply -f hpa.yaml
-```
-
-Verifica que todo esté corriendo:
-
-```powershell
-kubectl get pods
-# NAME                       READY   STATUS
-# balanceo-app-xxxxx-aaa     1/1     Running
-# balanceo-app-xxxxx-bbb     1/1     Running
-# mongo-xxxxx                1/1     Running
-```
-
-Verifica el estado del HPA (espera a que `TARGETS` deje de mostrar `<unknown>`):
-
-```powershell
-kubectl get hpa
-# NAME               TARGETS   MINPODS   MAXPODS   REPLICAS
-# balanceo-app-hpa   2%/50%    2         6         2
-```
-
-### 5. Abrir la app en el navegador
-
-```powershell
-minikube service balanceo-app-svc
-```
-
-Esto abre el navegador automáticamente y muestra una URL del estilo `http://127.0.0.1:XXXXX`. **Anota ese puerto** — lo necesitarás en los siguientes pasos.
-
----
-
-## Demo en 4 pasos
-
-Reemplaza `XXXXX` con el puerto que devolvió `minikube service` en el paso anterior.
-
-### Demo 1 — Balanceo de carga visible
-
-Haz 10 peticiones seguidas y observa que distintos pods responden:
-
-```powershell
-for ($i=1; $i -le 10; $i++) { (Invoke-RestMethod http://127.0.0.1:XXXXX/).pod }
-```
-
-Resultado esperado — el nombre del pod cambia entre peticiones:
-
-```
-balanceo-app-5c5958b74-2dhqd
-balanceo-app-5c5958b74-wdqbs
-balanceo-app-5c5958b74-2dhqd
-balanceo-app-5c5958b74-wdqbs
-```
-
-O abre el dashboard en el navegador para verlo en tiempo real:
-
-```
-http://127.0.0.1:XXXXX/dashboard
-```
-
----
-
-### Demo 2 — Estado compartido entre pods
-
-Aunque distintos pods atienden cada petición, el contador global sigue subiendo de forma consistente porque todos escriben en la misma MongoDB:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:XXXXX/
-# pod: balanceo-app-xxx-aaa   peticiones_totales: 7
-
-Invoke-RestMethod http://127.0.0.1:XXXXX/
-# pod: balanceo-app-xxx-bbb   peticiones_totales: 8  ← pod distinto, contador sigue
-```
-
-**Concepto:** los pods son stateless e intercambiables. MongoDB es la única fuente de verdad.
-
----
-
-### Demo 3 — Auto-reparación
-
-```powershell
-# Ver los pods actuales
-kubectl get pods
-
-# Borrar uno (copia el nombre completo de la columna NAME)
-kubectl delete pod balanceo-app-NOMBRE-COMPLETO
-
-# En otra terminal, observar cómo K8s lo recrea solo
-kubectl get pods -w
-```
-
-Se verá el pod pasar a `Terminating` y enseguida aparecer uno nuevo en `ContainerCreating` → `Running`. Kubernetes detectó que el número de réplicas bajó y creó uno nuevo automáticamente.
-
----
-
-### Demo 4 — Autoescalado con HPA
-
-**Terminal 1** — lanzar carga de CPU:
-
-```powershell
-while ($true) { Invoke-RestMethod http://127.0.0.1:XXXXX/stress | Out-Null }
-```
-
-**Terminal 2** — observar cómo escala:
-
-```powershell
-kubectl get hpa -w
-```
-
-Resultado esperado — el CPU sube y Kubernetes crea más pods automáticamente:
-
-```
-NAME               TARGETS    MINPODS   MAXPODS   REPLICAS
-balanceo-app-hpa   2%/50%     2         6         2
-balanceo-app-hpa   67%/50%    2         6         3
-balanceo-app-hpa   89%/50%    2         6         4
-balanceo-app-hpa   94%/50%    2         6         6
-```
-
-Al detener el stress (Ctrl+C en Terminal 1), en ~5 minutos el HPA reduce los pods de vuelta a 2.
-
----
-
-## Limpieza
-
-```powershell
-kubectl delete -f hpa.yaml
-kubectl delete -f app-deployment.yaml
-kubectl delete -f mongo-deployment.yaml
-minikube stop
-```
-
----
-
-## Referencia de comandos útiles
-
-```powershell
-kubectl get pods              # estado de los pods
-kubectl get hpa               # estado del autoscaler
-kubectl get services          # servicios y puertos
-kubectl logs <nombre-pod>     # logs de un pod
-kubectl describe pod <nombre> # información detallada de un pod
-kubectl delete pod <nombre>   # borrar un pod (K8s lo recrea solo)
-minikube service <nombre-svc> # abrir un servicio en el navegador
-minikube stop                 # detener el clúster local
-```
+| `Deployment` | `app-deployment.yaml` | Mantiene 3 réplicas de la app Flask |
+| `Deployment` | `mongo-deployment.yaml` | Mantiene 1 réplica de MongoDB |
+| `Service (LoadBalancer)` | `app-deployment.yaml` | Expone la app al exterior y balancea el tráfico |
+| `Service (ClusterIP)` | `mongo-deployment.yaml` | Expone MongoDB internamente para que los pods lo encuentren por nombre |
+| `HorizontalPodAutoscaler` | `hpa.yaml` | Escala la app entre 2 y 6 réplicas según CPU |
