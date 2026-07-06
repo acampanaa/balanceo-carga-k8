@@ -116,11 +116,15 @@ balanceo-app-5c5958b74-2dhqd
 balanceo-app-5c5958b74-wdqbs
 ```
 
+![10 peticiones repartidas entre pods](images/image_ten.png)
+
 O abre el dashboard en el navegador para verlo en tiempo real:
 
 ```
 http://127.0.0.1:XXXXX/dashboard
 ```
+
+![Dashboard de balanceo en tiempo real](images/image_dashboard.png)
 
 ---
 
@@ -178,6 +182,8 @@ balanceo-app-hpa   67%/50%    2         6         3
 balanceo-app-hpa   89%/50%    2         6         4
 balanceo-app-hpa   94%/50%    2         6         6
 ```
+
+![HPA escalando pods bajo carga de CPU](images/image_stress.png)
 
 Al detener el stress (Ctrl+C en Terminal 1), en ~5 minutos el HPA reduce los pods de vuelta a 2.
 
